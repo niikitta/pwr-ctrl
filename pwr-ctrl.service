@@ -1,0 +1,9 @@
+[Unit]
+Description=Server power control
+
+[Service]
+ExecStart=/usr/bin/pwr-ctrl
+Type=simple
+
+[Install]
+WantedBy=multi-user.target

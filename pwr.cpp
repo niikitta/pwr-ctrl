@@ -1,4 +1,5 @@
 #include <boost/asio.hpp>
+#include <gpiod.hpp>
 #include <sdbusplus/asio/object_server.hpp>
 #include <sdbusplus/asio/property.hpp>
 
@@ -12,8 +13,13 @@ std::shared_ptr<sdbusplus::asio::connection> conn;
 std::shared_ptr<sdbusplus::asio::dbus_interface> hostIface;
 std::shared_ptr<sdbusplus::asio::dbus_interface> chassisIface;
 
-static std::string hostDbusName = "xyz.openbmc_project.State.Host";
-static std::string chassisDbusName = "xyz.openbmc_project.State.Chassis";
+static const std::string hostDbusName = "xyz.openbmc_project.State.Host";
+static const std::string chassisDbusName = "xyz.openbmc_project.State.Chassis";
+
+static std::string currentState = "";
+
+static gpiod::line psPwrOkLine;
+static gpiod::line pwrOutLine;
 
 enum class Event
 {
@@ -35,14 +41,44 @@ static uint64_t getCurrentTimeMs()
     return currentTimeMs;
 }
 
-void setGPIOOutput(Event event)
+static bool requestGPIOEvents(const std::string gpio, gpiod::line& line)
+{
+    gpiod::line line = gpiod::find_line(gpio.c_str());
+    try
+    {
+        line.request({"pwr-ctrl", gpiod::line_request::EVENT_BOTH_EDGES});
+    }
+    catch (const std::exception&)
+    {
+        std::cout << "pwr-ctrl: failed to found gpio line " << gpio << '\n';
+        return false;
+    }
+
+    return true;
+}
+
+static void changeHostState()
+{
+    if (psPwrOkLine.get_value())
+    {
+        currentState = "xyz.openbmc_project.State.Host.HostState.Running";
+    }
+    else
+    {
+        currentState = "xyz.openbmc_project.State.Host.HostState.Off";
+    }
+}
+
+static void GPIOPowerOperations(Event event)
 {
     if (event == Event::on)
     {
+        // pwrOutLine.set_value(0);
         system("gpioset gpiochip0 25=0");
     }
     else if (event == Event::off)
     {
+        // pwrOutLine.set_value(1);
         system("gpioset gpiochip0 25=1");
     }
 }
@@ -57,6 +93,13 @@ int main()
     conn->request_name(hostDbusName.c_str());
     conn->request_name(chassisDbusName.c_str());
 
+    if (!requestGPIOEvents("PS_PWROK", psPwrOkLine))
+        return -1;
+    if (!requestGPIOEvents("POWER_OUT", pwrOutLine))
+        return -1;
+
+    changeHostState();
+
     sdbusplus::asio::object_server hostServer =
         sdbusplus::asio::object_server(conn);
     hostIface = hostServer.add_interface("/xyz/openbmc_project/state/host0",
@@ -68,13 +111,19 @@ int main()
             if (req == "xyz.openbmc_project.State.Host.Transition.On")
             {
                 std::cout << "Power On...\n";
-                setGPIOOutput(Event::on);
+                GPIOPowerOperations(Event::on);
                 sdbusplus::asio::setProperty<std::string>(
                     *conn, "xyz.openbmc_project.State.Host",
                     "/xyz/openbmc_project/state/host0",
                     "xyz.openbmc_project.State.Host", "CurrentHostState",
                     "xyz.openbmc_project.State.Host.HostState.Running",
-                    [](const boost::system::error_code& ec) {});
+                    [](const boost::system::error_code&) {});
+                sdbusplus::asio::setProperty<int>(
+                    *conn, chassisDbusName,
+                    "/xyz/openbmc_project/state/chassis0",
+                    "xyz.openbmc_project.State.Chassis", "LastStateChangeTime",
+                    getCurrentTimeMs(),
+                    [](const boost::system::error_code&) {});
             }
             else
             {
@@ -84,8 +133,7 @@ int main()
             return 1;
         });
     hostIface->register_property(
-        "CurrentHostState",
-        std::string("xyz.openbmc_project.State.Host.HostState.Running"),
+        "CurrentHostState", currentState,
         sdbusplus::asio::PropertyPermission::readWrite);
     hostIface->initialize();
 
@@ -101,12 +149,18 @@ int main()
             if (req == "xyz.openbmc_project.State.Chassis.Transition.Off")
             {
                 std::cout << "Power Off...\n";
-                setGPIOOutput(Event::off);
+                GPIOPowerOperations(Event::off);
                 sdbusplus::asio::setProperty<std::string>(
                     *conn, hostDbusName, "/xyz/openbmc_project/state/host0",
                     "xyz.openbmc_project.State.Host", "CurrentHostState",
                     "xyz.openbmc_project.State.Host.HostState.Off",
-                    [](const boost::system::error_code& ec) {});
+                    [](const boost::system::error_code&) {});
+                sdbusplus::asio::setProperty<int>(
+                    *conn, chassisDbusName,
+                    "/xyz/openbmc_project/state/chassis0",
+                    "xyz.openbmc_project.State.Chassis", "LastStateChangeTime",
+                    getCurrentTimeMs(),
+                    [](const boost::system::error_code&) {});
             }
             else
             {

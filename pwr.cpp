@@ -74,12 +74,12 @@ static void GPIOPowerOperations(Event event)
     if (event == Event::on)
     {
         // pwrOutLine.set_value(0);
-        system("gpioset gpiochip0 25=0");
+        system("gpioset gpiochip0 61=1");
     }
     else if (event == Event::off)
     {
         // pwrOutLine.set_value(1);
-        system("gpioset gpiochip0 25=1");
+        system("gpioset gpiochip0 61=0");
     }
 }
 

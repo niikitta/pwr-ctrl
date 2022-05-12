@@ -10,12 +10,14 @@ add_definitions(-DBOOST_NO_RTTI)
 add_definitions(-DBOOST_NO_TYPEID)
 add_definitions(-DBOOST_ASIO_DISABLE_THREADS)
 
+add_definitions(-DANOMALY_WITH_OFFSET)
+
 set(SRC_FILES pwr.cpp)
 
 add_executable(${PROJECT_NAME} ${SRC_FILES})
 target_link_libraries(${PROJECT_NAME} systemd)
 target_link_libraries(${PROJECT_NAME} sdbusplus)
-target_link_libraries(${PROJECT_NAME} gpiodcxx)
+target_link_libraries(${PROJECT_NAME} gpiod)
 
 install(TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES pwr-ctrl.service DESTINATION /lib/systemd/system)

@@ -1,31 +1,70 @@
+#include <gpiod.h>
+
 #include <boost/asio.hpp>
-#include <gpiod.hpp>
+#include <sdbusplus/asio/connection.hpp>
 #include <sdbusplus/asio/object_server.hpp>
 #include <sdbusplus/asio/property.hpp>
 
 #include <iostream>
 
+#ifdef ANOMALY_WITH_OFFSET
+#define POWER_OUT_DEF 61
+#define PS_PWROK_DEF 31
+#endif
+
+#ifdef NORMAL_GPIO_STATE
+#define POWER_OUT_DEF 25
+#define PS_PWROK_DEF 31
+#endif
+
 namespace pwr_ctrl
 {
+
 boost::asio::io_service io;
 std::shared_ptr<sdbusplus::asio::connection> conn;
 
 std::shared_ptr<sdbusplus::asio::dbus_interface> hostIface;
 std::shared_ptr<sdbusplus::asio::dbus_interface> chassisIface;
 
+boost::asio::steady_timer timer(io);
+
 static const std::string hostDbusName = "xyz.openbmc_project.State.Host";
 static const std::string chassisDbusName = "xyz.openbmc_project.State.Chassis";
 
+static std::string hostStateForCheck =
+    "xyz.openbmc_project.State.Host.HostState.";
+
 static std::string currentState = "";
 
-static gpiod::line psPwrOkLine;
-static gpiod::line pwrOutLine;
+// GPIO line offsets
+static const unsigned int PS_PWROK = PS_PWROK_DEF;
+static const unsigned int POWER_OUT = POWER_OUT_DEF;
 
-enum class Event
+typedef enum
 {
-    on,
-    off,
-};
+    nowOn,
+    nowOff,
+} State;
+State state;
+
+typedef enum
+{
+    goToOn,
+    goToOff,
+} Event;
+
+typedef struct
+{
+    const char* device;
+    unsigned int offsets;
+    int values;
+    unsigned int num_lines;
+    bool active_low;
+    const char* consumer;
+    gpiod_ctxless_set_value_cb cb;
+    void* data;
+    int flags;
+} PwrConfig;
 
 static uint64_t getCurrentTimeMs()
 {
@@ -41,64 +80,143 @@ static uint64_t getCurrentTimeMs()
     return currentTimeMs;
 }
 
-static bool requestGPIOEvents(const std::string gpio, gpiod::line& line)
+static int setGPIOValue(PwrConfig& pwrConfig, const int& value)
 {
-    gpiod::line line = gpiod::find_line(gpio.c_str());
-    try
-    {
-        line.request({"pwr-ctrl", gpiod::line_request::EVENT_BOTH_EDGES});
-    }
-    catch (const std::exception&)
-    {
-        std::cout << "pwr-ctrl: failed to found gpio line " << gpio << '\n';
-        return false;
-    }
+    int rv;
 
-    return true;
+    rv = gpiod_ctxless_set_value_multiple_ext(
+        pwrConfig.device, &pwrConfig.offsets, &pwrConfig.values,
+        pwrConfig.num_lines, pwrConfig.active_low, pwrConfig.consumer,
+        pwrConfig.cb, pwrConfig.data, pwrConfig.flags);
+
+    if (rv < 0)
+    {
+        std::cerr << "Error setting GPIO value for GPIO line "
+                  << pwrConfig.offsets << std::endl;
+    }
+    return 0;
 }
 
-static void changeHostState()
+static int getGPIOValue(PwrConfig& pwrConfig)
 {
-    if (psPwrOkLine.get_value())
+    int value, rv;
+
+    rv = gpiod_ctxless_get_value_multiple_ext(
+        pwrConfig.device, &pwrConfig.offsets, &value, pwrConfig.num_lines,
+        pwrConfig.active_low, pwrConfig.consumer, pwrConfig.flags);
+
+    if (rv < 0)
     {
-        currentState = "xyz.openbmc_project.State.Host.HostState.Running";
+        std::cerr << "Error reading GPIO value for GPIO line "
+                  << pwrConfig.offsets << std::endl;
     }
-    else
+    return value;
+}
+
+static State getPowerState(PwrConfig& psPwrCfg)
+{
+    int value;
+    value = getGPIOValue(psPwrCfg);
+    if (value == 1)
+        return nowOn;
+    else if (value == 0)
+        return nowOff;
+}
+
+static void dbusMetaInfoSet()
+{
+    std::string stateConcat;
+    if (state == nowOn)
     {
-        currentState = "xyz.openbmc_project.State.Host.HostState.Off";
+        stateConcat = "Running";
+    }
+    else if (state == nowOff)
+    {
+        stateConcat = "Off";
+    }
+    sdbusplus::asio::setProperty<std::string>(
+        *conn, "xyz.openbmc_project.State.Host",
+        "/xyz/openbmc_project/state/host0", "xyz.openbmc_project.State.Host",
+        "CurrentHostState",
+        "xyz.openbmc_project.State.Host.HostState." + stateConcat,
+        [](const boost::system::error_code&) {});
+
+    sdbusplus::asio::setProperty<int>(
+        *conn, chassisDbusName, "/xyz/openbmc_project/state/chassis0",
+        "xyz.openbmc_project.State.Chassis", "LastStateChangeTime",
+        getCurrentTimeMs(), [](const boost::system::error_code&) {});
+}
+
+/*
+ *   I have anomly offset in GPIOD group(power management).
+ *   This handler describe power management with this normal mode and
+ *   anomaly mode.
+ */
+static void handlerForGPIOOut(Event event, PwrConfig& pwrOutCfg)
+{
+    if (event == goToOn)
+    {
+        std::clog << "Go to power on...\n";
+#ifdef NORMAL_GPIO_STATE
+        timer.expires_after(boost::asio::chrono::milliseconds(200));
+        setGPIOValue(pwrOutCfg, 0);
+        timer.async_wait([&pwrOutCfg](const boost::system::error_code ec) {
+            if (ec)
+            {
+                std::cerr << "async_wait failed: " << ec.message() << std::endl;
+                return;
+            }
+            setGPIOValue(pwrOutCfg, 1);
+        });
+#endif
+#ifdef ANOMALY_WITH_OFFSET
+        setGPIOValue(pwrOutCfg, 0);
+#endif
+    }
+    else if (event == goToOff)
+    {
+        std::clog << "Go to power off...\n";
+#ifdef NORMAL_GPIO_STATE
+        setGPIOValue(pwrOutCfg, 0);
+#endif
+#ifdef ANOMALY_WITH_OFFSET
+        setGPIOValue(pwrOutCfg, 1);
+#endif
     }
 }
 
-static void GPIOPowerOperations(Event event)
+static void initPwrCfg(PwrConfig& pwrConfig, const unsigned int& gpioOffset)
 {
-    if (event == Event::on)
-    {
-        // pwrOutLine.set_value(0);
-        system("gpioset gpiochip0 61=1");
-    }
-    else if (event == Event::off)
-    {
-        // pwrOutLine.set_value(1);
-        system("gpioset gpiochip0 61=0");
-    }
+    const int defalut_value = 0;
+    pwrConfig = {"gpiochip0", gpioOffset, defalut_value, 1, true,
+                 "pwr_ctrl",  NULL,       NULL,          0};
 }
 
 } // namespace pwr_ctrl
 
-int main()
+int main(int argc, char** argv)
 {
     using namespace pwr_ctrl;
+
     conn = std::make_shared<sdbusplus::asio::connection>(io);
 
     conn->request_name(hostDbusName.c_str());
     conn->request_name(chassisDbusName.c_str());
 
-    if (!requestGPIOEvents("PS_PWROK", psPwrOkLine))
-        return -1;
-    if (!requestGPIOEvents("POWER_OUT", pwrOutLine))
-        return -1;
+    PwrConfig pwrOutCfg;
+    PwrConfig psPwrOkCfg;
+    initPwrCfg(pwrOutCfg, POWER_OUT);
+    initPwrCfg(psPwrOkCfg, PS_PWROK);
 
-    changeHostState();
+    state = getPowerState(psPwrOkCfg);
+    if (state == nowOn)
+    {
+        currentState = "xyz.openbmc_project.State.Host.HostState.Running";
+    }
+    else if (state == nowOff)
+    {
+        currentState = "xyz.openbmc_project.State.Host.HostState.Off";
+    }
 
     sdbusplus::asio::object_server hostServer =
         sdbusplus::asio::object_server(conn);
@@ -107,27 +225,12 @@ int main()
     hostIface->register_property(
         "RequestedHostTransition",
         std::string("xyz.openbmc_project.State.Host.Transition.Off"),
-        [](const std::string& req, std::string& resp) {
+        [&pwrOutCfg](const std::string& req, std::string& resp) {
             if (req == "xyz.openbmc_project.State.Host.Transition.On")
             {
-                std::cout << "Power On...\n";
-                GPIOPowerOperations(Event::on);
-                sdbusplus::asio::setProperty<std::string>(
-                    *conn, "xyz.openbmc_project.State.Host",
-                    "/xyz/openbmc_project/state/host0",
-                    "xyz.openbmc_project.State.Host", "CurrentHostState",
-                    "xyz.openbmc_project.State.Host.HostState.Running",
-                    [](const boost::system::error_code&) {});
-                sdbusplus::asio::setProperty<int>(
-                    *conn, chassisDbusName,
-                    "/xyz/openbmc_project/state/chassis0",
-                    "xyz.openbmc_project.State.Chassis", "LastStateChangeTime",
-                    getCurrentTimeMs(),
-                    [](const boost::system::error_code&) {});
-            }
-            else
-            {
-                std::cout << "pwr-ctrl: Undefined request to host\n";
+                state = nowOn;
+                dbusMetaInfoSet();
+                handlerForGPIOOut(goToOn, pwrOutCfg);
             }
             resp = req;
             return 1;
@@ -145,37 +248,21 @@ int main()
     chassisIface->register_property(
         "RequestedPowerTransition",
         std::string("xyz.openbmc_project.State.Chassis.Transition.Off"),
-        [](const std::string& req, std::string resp) {
+        [&pwrOutCfg](const std::string& req, std::string resp) {
             if (req == "xyz.openbmc_project.State.Chassis.Transition.Off")
             {
-                std::cout << "Power Off...\n";
-                GPIOPowerOperations(Event::off);
-                sdbusplus::asio::setProperty<std::string>(
-                    *conn, hostDbusName, "/xyz/openbmc_project/state/host0",
-                    "xyz.openbmc_project.State.Host", "CurrentHostState",
-                    "xyz.openbmc_project.State.Host.HostState.Off",
-                    [](const boost::system::error_code&) {});
-                sdbusplus::asio::setProperty<int>(
-                    *conn, chassisDbusName,
-                    "/xyz/openbmc_project/state/chassis0",
-                    "xyz.openbmc_project.State.Chassis", "LastStateChangeTime",
-                    getCurrentTimeMs(),
-                    [](const boost::system::error_code&) {});
-            }
-            else
-            {
-                std::cout << "pwr-ctrl: Undefined request to chassis\n";
+                state = nowOff;
+                dbusMetaInfoSet();
+                handlerForGPIOOut(goToOff, pwrOutCfg);
             }
             resp = req;
             return 1;
         });
-
     chassisIface->register_property(
         "CurrentPowerState",
         std::string("xyz.openbmc_project.State.Chassis.PowerState.On"),
         sdbusplus::asio::PropertyPermission::readWrite);
     chassisIface->register_property("LastStateChangeTime", getCurrentTimeMs());
-
     chassisIface->initialize();
 
     io.run();

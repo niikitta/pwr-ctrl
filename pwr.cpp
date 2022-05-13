@@ -50,7 +50,8 @@ State state;
 typedef enum
 {
     goToOn,
-    goToOff,
+    goToForceOff,
+    goToForceReboot,
 } Event;
 
 typedef struct
@@ -84,10 +85,9 @@ static int setGPIOValue(PwrConfig& pwrConfig, const int& value)
 {
     int rv;
 
-    rv = gpiod_ctxless_set_value_multiple_ext(
-        pwrConfig.device, &pwrConfig.offsets, &pwrConfig.values,
-        pwrConfig.num_lines, pwrConfig.active_low, pwrConfig.consumer,
-        pwrConfig.cb, pwrConfig.data, pwrConfig.flags);
+    rv = gpiod_ctxless_set_value_ext(
+        pwrConfig.device, pwrConfig.offsets, value, pwrConfig.active_low,
+        pwrConfig.consumer, pwrConfig.cb, pwrConfig.data, pwrConfig.flags);
 
     if (rv < 0)
     {
@@ -147,6 +147,32 @@ static void dbusMetaInfoSet()
         getCurrentTimeMs(), [](const boost::system::error_code&) {});
 }
 
+static void powerOn(PwrConfig& pwrOutCfg)
+{
+    timer.expires_after(boost::asio::chrono::milliseconds(200));
+    setGPIOValue(pwrOutCfg, 0);
+    timer.async_wait([&pwrOutCfg](const boost::system::error_code ec) {
+        if (ec)
+        {
+            std::cerr << "async_wait failed: " << ec.message() << std::endl;
+            return;
+        }
+        setGPIOValue(pwrOutCfg, 1);
+    });
+}
+
+// after force power off front panel button unavailable
+static void forcePowerOff(PwrConfig& pwrOutCfg)
+{
+    setGPIOValue(pwrOutCfg, 0);
+}
+
+static void forceReboot(PwrConfig& pwrOutCfg)
+{
+    forcePowerOff(pwrOutCfg);
+    powerOn(pwrOutCfg);
+}
+
 /*
  *   I have anomly offset in GPIOD group(power management).
  *   This handler describe power management with this normal mode and
@@ -158,29 +184,30 @@ static void handlerForGPIOOut(Event event, PwrConfig& pwrOutCfg)
     {
         std::clog << "Go to power on...\n";
 #ifdef NORMAL_GPIO_STATE
-        timer.expires_after(boost::asio::chrono::milliseconds(200));
-        setGPIOValue(pwrOutCfg, 0);
-        timer.async_wait([&pwrOutCfg](const boost::system::error_code ec) {
-            if (ec)
-            {
-                std::cerr << "async_wait failed: " << ec.message() << std::endl;
-                return;
-            }
-            setGPIOValue(pwrOutCfg, 1);
-        });
+        powerOn(pwrOutCfg);
 #endif
 #ifdef ANOMALY_WITH_OFFSET
-        setGPIOValue(pwrOutCfg, 0);
+        powerOn(pwrOutCfg);
 #endif
     }
-    else if (event == goToOff)
+    else if (event == goToForceOff)
     {
-        std::clog << "Go to power off...\n";
+        std::clog << "Go to force power off...\n";
 #ifdef NORMAL_GPIO_STATE
-        setGPIOValue(pwrOutCfg, 0);
+        forcePowerOff(pwrOutCfg);
 #endif
 #ifdef ANOMALY_WITH_OFFSET
-        setGPIOValue(pwrOutCfg, 1);
+        forcePowerOff(pwrOutCfg);
+#endif
+    }
+    else if (event == goToForceReboot)
+    {
+        std::clog << "Go to force reboot...\n";
+#ifdef NORMAL_GPIO_STATE
+        forceReboot(pwrOutCfg);
+#endif
+#ifdef ANOMALY_WITH_OFFSET
+        forceReboot(pwrOutCfg);
 #endif
     }
 }
@@ -188,7 +215,7 @@ static void handlerForGPIOOut(Event event, PwrConfig& pwrOutCfg)
 static void initPwrCfg(PwrConfig& pwrConfig, const unsigned int& gpioOffset)
 {
     const int defalut_value = 0;
-    pwrConfig = {"gpiochip0", gpioOffset, defalut_value, 1, true,
+    pwrConfig = {"gpiochip0", gpioOffset, defalut_value, 1, false,
                  "pwr_ctrl",  NULL,       NULL,          0};
 }
 
@@ -232,6 +259,13 @@ int main(int argc, char** argv)
                 dbusMetaInfoSet();
                 handlerForGPIOOut(goToOn, pwrOutCfg);
             }
+            else if (
+                req ==
+                "xyz.openbmc_project.State.Host.Transition.ForceWarmReboot")
+            {
+                dbusMetaInfoSet();
+                handlerForGPIOOut(goToForceReboot, pwrOutCfg);
+            }
             resp = req;
             return 1;
         });
@@ -253,7 +287,7 @@ int main(int argc, char** argv)
             {
                 state = nowOff;
                 dbusMetaInfoSet();
-                handlerForGPIOOut(goToOff, pwrOutCfg);
+                handlerForGPIOOut(goToForceOff, pwrOutCfg);
             }
             resp = req;
             return 1;

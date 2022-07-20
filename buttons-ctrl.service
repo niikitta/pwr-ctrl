@@ -1,9 +1,12 @@
 [Unit]
-Description=Server power control
+Description=Server buttons control
 
 [Service]
 ExecStart=/usr/bin/pwr-ctrl
 Type=simple
+
+Restart=always
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target

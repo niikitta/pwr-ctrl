@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
-project(pwr-ctrl CXX)
+project(buttons-ctrl CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -12,12 +12,13 @@ add_definitions(-DBOOST_ASIO_DISABLE_THREADS)
 
 add_definitions(-DANOMALY_WITH_OFFSET)
 
-set(SRC_FILES pwr.cpp)
+set(SRC_FILES buttons.cpp)
 
 add_executable(${PROJECT_NAME} ${SRC_FILES})
 target_link_libraries(${PROJECT_NAME} systemd)
 target_link_libraries(${PROJECT_NAME} sdbusplus)
 target_link_libraries(${PROJECT_NAME} gpiod)
+target_link_libraries(${PROJECT_NAME} gpiodcxx)
 
 install(TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES pwr-ctrl.service DESTINATION /lib/systemd/system)
+install(FILES buttons-ctrl.service DESTINATION /lib/systemd/system)

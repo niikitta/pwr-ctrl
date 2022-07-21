@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
-project(buttons-ctrl CXX)
+project(pwr-ctrl CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -21,4 +21,4 @@ target_link_libraries(${PROJECT_NAME} gpiod)
 target_link_libraries(${PROJECT_NAME} gpiodcxx)
 
 install(TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES buttons-ctrl.service DESTINATION /lib/systemd/system)
+install(FILES pwr-ctrl.service DESTINATION /lib/systemd/system)

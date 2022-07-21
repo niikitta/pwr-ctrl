@@ -18,6 +18,7 @@ add_executable(${PROJECT_NAME} ${SRC_FILES})
 target_link_libraries(${PROJECT_NAME} systemd)
 target_link_libraries(${PROJECT_NAME} sdbusplus)
 target_link_libraries(${PROJECT_NAME} gpiod)
+target_link_libraries(${PROJECT_NAME} gpiodcxx)
 
 install(TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES pwr-ctrl.service DESTINATION /lib/systemd/system)

@@ -6,7 +6,7 @@ ExecStart=/usr/bin/pwr-ctrl
 Type=simple
 
 Restart=always
-RestartSec=5s
+RestartSec=2s
 
 [Install]
 WantedBy=multi-user.target

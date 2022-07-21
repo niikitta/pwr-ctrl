@@ -25,6 +25,11 @@ static const std::string chassisDbusName = "xyz.openbmc_project.State.Chassis";
 static const std::string uidledDbusName =
     "xyz.openbmc_project.LED.GroupManager";
 
+static const std::string propertyServerOn =
+    "xyz.openbmc_project.State.Host.HostState.Running";
+static const std::string propertyServerOff =
+    "xyz.openbmc_project.State.Host.HostState.Off";
+
 static const std::string appName = "buttons_ctrl";
 
 typedef struct _GPIO
@@ -81,8 +86,7 @@ static int powerOff()
     sdbusplus::asio::setProperty<std::string>(
         *conn, hostDbusName, "/xyz/openbmc_project/state/host0",
         "xyz.openbmc_project.State.Host", "CurrentHostState",
-        "xyz.openbmc_project.State.Host.HostState.Off",
-        [](const boost::system::error_code&) {});
+        propertyServerOff.c_str(), [](const boost::system::error_code&) {});
 
     int ret;
     std::cout << "goPwrOff\n";
@@ -107,8 +111,7 @@ static int powerOn()
     sdbusplus::asio::setProperty<std::string>(
         *conn, hostDbusName, "/xyz/openbmc_project/state/host0",
         "xyz.openbmc_project.State.Host", "CurrentHostState",
-        "xyz.openbmc_project.State.Host.HostState.Running",
-        [](const boost::system::error_code&) {});
+        propertyServerOn.c_str(), [](const boost::system::error_code&) {});
 
     int ret;
     // anomaly mode
@@ -256,6 +259,11 @@ int main()
             if (req == "xyz.openbmc_project.State.Host.Transition.On")
             {
                 powerOn();
+                sdbusplus::asio::setProperty<std::string>(
+                    *conn, hostDbusName, "/xyz/openbmc_project/state/host0",
+                    "xyz.openbmc_project.State.Host", "CurrentHostState",
+                    propertyServerOn.c_str(),
+                    [](const boost::system::error_code&) {});
             }
             else if (
                 req ==
@@ -269,9 +277,8 @@ int main()
 
     hostIface->register_property(
         "CurrentHostState",
-        getGpios(psPwrOk.offset)
-            ? "xyz.openbmc_project.State.Host.HostState.Running"
-            : "xyz.openbmc_project.State.Host.HostState.Off",
+        getGpios(psPwrOk.offset) ? propertyServerOn.c_str()
+                                 : propertyServerOff.c_str(),
         sdbusplus::asio::PropertyPermission::readWrite);
     hostIface->initialize();
 
@@ -287,6 +294,11 @@ int main()
             if (req == "xyz.openbmc_project.State.Chassis.Transition.Off")
             {
                 powerOff();
+                sdbusplus::asio::setProperty<std::string>(
+                    *conn, hostDbusName, "/xyz/openbmc_project/state/host0",
+                    "xyz.openbmc_project.State.Host", "CurrentHostState",
+                    propertyServerOff.c_str(),
+                    [](const boost::system::error_code&) {});
             }
             resp = req;
             return 1;
